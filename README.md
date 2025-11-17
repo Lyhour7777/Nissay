@@ -17,7 +17,8 @@ cd NissayProject
 2. Optional: Create virtual environment
 ```bash
 python -m venv .venv
-.venv\Scripts\Activate.ps1
+source .venv/bin/activate   # Linux / Mac
+.venv\Scripts\activate      # Windows
 ```
 
 3. Install dependencies
