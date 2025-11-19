@@ -11,8 +11,24 @@ import io
 import os 
 import time
 import librosa
+from gtts import gTTS
+from io import BytesIO
 
 st.title("Nissay Project Prototype")
+
+# ============================================
+# 🆕 ENABLE AUDIO AUTOPLAY (ONE-TIME CLICK)
+# ============================================
+if 'audio_enabled' not in st.session_state:
+    st.session_state.audio_enabled = False
+    st.session_state.last_prediction = None
+
+if not st.session_state.audio_enabled:
+    st.warning("⚠️ Click the button below to enable automatic audio feedback")
+    if st.button("🔊 Enable Audio Feedback", type="primary"):
+        st.session_state.audio_enabled = True
+        st.rerun()
+# ============================================
 
 audio_interpreter = tf.lite.Interpreter(model_path="AudioSavedModel/soundclassifier_with_metadata.tflite")
 audio_interpreter.allocate_tensors()
@@ -22,83 +38,71 @@ audio_output_details = audio_interpreter.get_output_details()
 
 audio_labels = [label.upper().strip() for label in open("AudioSavedModel/labels.txt")]
 
-# st.subheader("Record Audio OR Upload WAV File")
-# # Record audio
-# recorded_audio = mic_recorder(
-#     start_prompt="Start Recording",
-#     stop_prompt="Stop Recording",
-#     key="recorder"
-# )
+# ============================================
+# 🆕 TEXT-TO-SPEECH FUNCTION WITH AUTOPLAY
+# ============================================
+def play_speech_auto(text, placeholder):
+    """Generate and automatically play speech in fixed placeholder"""
+    try:
+        # Create unique key for this prediction
+        prediction_key = f"{text}_{time.time()}"
+        
+        # Only play if it's a new prediction
+        if st.session_state.last_prediction != prediction_key:
+            st.session_state.last_prediction = prediction_key
+            
+            tts = gTTS(text=text, lang='en', slow=False)
+            fp = BytesIO()
+            tts.write_to_fp(fp)
+            fp.seek(0)
+            
+            # Convert to base64
+            audio_base64 = base64.b64encode(fp.read()).decode()
+            
+            # Create autoplay HTML in the placeholder
+            audio_html = f"""
+            <audio autoplay>
+                <source src="data:audio/mp3;base64,{audio_base64}" type="audio/mp3">
+            </audio>
+            """
+            placeholder.markdown(audio_html, unsafe_allow_html=True)
+    except Exception as e:
+        placeholder.error(f"Could not generate speech: {e}")
+# ============================================
 
-# if recorded_audio:
+uploaded_audio = st.file_uploader("Upload audio file", type=["wav", "mp3", "m4a", "ogg"], key="audio_uploader")
 
-#     raw = recorded_audio["bytes"]
-
-#     # -----------------------------
-#     # Convert raw data to numpy int16
-#     # -----------------------------
-#     if isinstance(raw, str) and raw.startswith("data:audio"):
-#         # Remove header and decode Base64
-#         header, encoded = raw.split(",", 1)
-#         pcm_bytes = np.frombuffer(base64.b64decode(encoded), dtype=np.int16)
-#     elif isinstance(raw, str):
-#         pcm_bytes = np.frombuffer(base64.b64decode(raw), dtype=np.int16)
-#     else:
-#         pcm_bytes = np.frombuffer(raw, dtype=np.int16)  # already bytes
-
-#     # -----------------------------
-#     # Save WAV with proper RIFF header
-#     # -----------------------------
-#     os.makedirs("recordings", exist_ok=True)
-#     file_path = f"recordings/record_{int(time.time())}.wav"
-#     wav = wave.open(file_path, 'rb')
-
-#     audio_data = librosa.resample(wav.astype(np.float32), orig_sr=44100, target_sr=16000)
-
-#     with wave.open(file_path, "wb") as wf:
-#         wf.setnchannels(1)         # Mono
-#         wf.setsampwidth(2)         # int16 = 2 bytes
-#         wf.setframerate(16000)     # or your desired sample rate
-#         wf.writeframes(pcm_bytes.tobytes())
-
-#     st.success(f"Saved valid WAV to: {file_path}")
-#     st.audio(file_path)
- 
-#     with open(file_path, "rb") as f:
-#         wav = wave.open(f, 'rb')
-#         frames = wav.readframes(wav.getnframes())
-#         audio_data = np.frombuffer(frames, dtype=np.int16)
-
-#         input_shape = audio_input_details[0]['shape']
-#         audio_data = np.expand_dims(audio_data[:input_shape[1]], axis=0).astype(np.float32)
-
-#         audio_interpreter.set_tensor(audio_input_details[0]['index'], audio_data)
-#         # interpreter.set_tensor(input_details['index'], audio_data)
-#         audio_interpreter.invoke()
-#         audio_preds = audio_interpreter.get_tensor(audio_output_details[0]['index'])[0]
-
-#         idx = np.argmax(audio_preds)
-#         st.success(f"Prediction (Uploaded): {audio_labels[idx]}")
-#         st.info(f"Confidence: {audio_preds[idx]}")
-
-    
-
-uploaded_audio = st.file_uploader("Upload WAV audio", type=["wav"], key="audio_uploader")
+# Create fixed placeholder for audio feedback at the top
+audio_feedback_placeholder = st.empty()
 
 audio_preds = None
 if uploaded_audio:
-    wav = wave.open(uploaded_audio, 'rb')
-    frames = wav.readframes(wav.getnframes())
-    audio_data = np.frombuffer(frames, dtype=np.int16)
+    try:
+        # Save uploaded file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+            tmp_file.write(uploaded_audio.read())
+            tmp_path = tmp_file.name
+        
+        # Load audio with librosa (supports more formats)
+        audio_data, sr = librosa.load(tmp_path, sr=16000, mono=True)
+        
+        # Convert to int16 format
+        audio_data = (audio_data * 32767).astype(np.int16)
+        
+        # Prepare for model
+        input_shape = audio_input_details[0]['shape']
+        audio_data = np.expand_dims(audio_data[:input_shape[1]], axis=0).astype(np.float32)
 
-    input_shape = audio_input_details[0]['shape']
-    audio_data = np.expand_dims(audio_data[:input_shape[1]], axis=0).astype(np.float32)
-
-    audio_interpreter.set_tensor(audio_input_details[0]['index'], audio_data)
-    audio_interpreter.invoke()
-    audio_preds = audio_interpreter.get_tensor(audio_output_details[0]['index'])[0]
-
-
+        audio_interpreter.set_tensor(audio_input_details[0]['index'], audio_data)
+        audio_interpreter.invoke()
+        audio_preds = audio_interpreter.get_tensor(audio_output_details[0]['index'])[0]
+        
+        # Clean up temp file
+        os.unlink(tmp_path)
+        
+    except Exception as e:
+        st.error(f"Error processing audio file: {e}")
+        st.info("Please upload a valid audio file (WAV, MP3, M4A, or OGG format)")
 
 image_model = keras.layers.TFSMLayer(
     "img_savedmodel/model.savedmodel",
@@ -121,20 +125,45 @@ if uploaded_image:
     output = image_model(img_array)
     image_preds = output["sequential_5"].numpy()[0]
 
-
+# ============================================
+# RESULTS WITH AUTOMATIC AUDIO FEEDBACK
+# ============================================
 if audio_preds is not None and image_preds is not None:
     # Extract only sad and happy
     audio_two = audio_preds[1:]   # drop background noise
     combined_preds = (audio_two + image_preds) / 2
     combined_idx = np.argmax(combined_preds)
+    prediction_label = image_labels[combined_idx]
+    confidence = float(combined_preds[combined_idx]) * 100
+    
     st.subheader("Final Combined Result")
-    st.write("Combined Prediction:", image_labels[combined_idx])
-    st.write(f"Combined Confidence: {float(combined_preds[combined_idx]) *100 :.2f}%")
+    st.write("Combined Prediction:", prediction_label)
+    st.write(f"Combined Confidence: {confidence:.2f}%")
+    
+    # 🔊 Automatic audio feedback in fixed position
+    if st.session_state.audio_enabled:
+        play_speech_auto(f"{prediction_label}, {confidence:.0f} percent confidence", audio_feedback_placeholder)
+    
 elif audio_preds is not None:
     audio_idx = np.argmax(audio_preds)
-    st.success(f"Audio Prediction: {audio_labels[audio_idx]}")
-    st.info(f"Audio Confidence: {audio_preds[audio_idx] *100 :.2f}%")
+    prediction_label = audio_labels[audio_idx]
+    confidence = audio_preds[audio_idx] * 100
+    
+    st.success(f"Audio Prediction: {prediction_label}")
+    st.info(f"Audio Confidence: {confidence:.2f}%")
+    
+    # 🔊 Automatic audio feedback in fixed position
+    if st.session_state.audio_enabled:
+        play_speech_auto(f"{prediction_label}, {confidence:.0f} percent confidence", audio_feedback_placeholder)
+    
 elif image_preds is not None:
     image_idx = np.argmax(image_preds)
-    st.success(f"Image Prediction: {image_labels[image_idx]}")
-    st.info(f"Image Confidence: {float(image_preds[image_idx]) *100 :.2f}%")
+    prediction_label = image_labels[image_idx]
+    confidence = float(image_preds[image_idx]) * 100
+    
+    st.success(f"Image Prediction: {prediction_label}")
+    st.info(f"Image Confidence: {confidence:.2f}%")
+    
+    # 🔊 Automatic audio feedback in fixed position
+    if st.session_state.audio_enabled:
+        play_speech_auto(f"{prediction_label}, {confidence:.0f} percent confidence", audio_feedback_placeholder)
